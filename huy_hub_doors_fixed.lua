@@ -1,4 +1,4 @@
--- Huy Hub Doors v23 (performance pass + tighter ESP filters)
+-- Huy Hub Doors v24 (outline-only doors + strict hiding-spot ESP)
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
@@ -308,9 +308,17 @@ local function refreshESP()
 		if not r.box.Parent then
 			table.remove(itemBoxes, i)
 		else
-			local enabled = r.cat == "stardust" and cfg.espStardust or (r.cat == "coins" and cfg.espCoins or (r.cat == "items" and cfg.espItems))
+			local enabled = (r.cat == "stardust" and cfg.espStardust)
+				or (r.cat == "coins" and cfg.espCoins)
+				or (r.cat == "items" and cfg.espItems)
+				or (r.cat == "doors" and cfg.espDoors)
+				or (r.cat == "hide" and cfg.espHide)
 			r.box.Visible = enabled
-			r.box.Color3 = r.cat == "stardust" and COLORS[cfg.colStardust] or (r.cat == "coins" and COLORS[cfg.colCoins] or COLORS[cfg.colItems])
+			r.box.Color3 = (r.cat == "stardust" and COLORS[cfg.colStardust])
+				or (r.cat == "coins" and COLORS[cfg.colCoins])
+				or (r.cat == "doors" and COLORS[cfg.colDoors])
+				or (r.cat == "hide" and COLORS[cfg.colHide])
+				or COLORS[cfg.colItems]
 		end
 	end
 	for i = #doorLabels, 1, -1 do
@@ -378,7 +386,22 @@ local function espDoor(d)
 			end
 		end
 	end
-	for _, part in ipairs(targets) do addESP(part, "doors") end
+	for _, part in ipairs(targets) do
+		if not part:FindFirstChild("_HuyDoorBox") then
+			local ok, box = pcall(function()
+				local b = Instance.new("SelectionBox")
+				b.Name = "_HuyDoorBox"
+				b.Adornee = part
+				b.LineThickness = 0.035
+				b.SurfaceTransparency = 1 -- no fill: outline only
+				b.Color3 = COLORS[cfg.colDoors]
+				b.Visible = cfg.espDoors
+				b.Parent = part
+				return b
+			end)
+			if ok then table.insert(itemBoxes, {box = box, cat = "doors"}) end
+		end
+	end
 	local roomN = tonumber(room.Name)
 	if not roomN then return end
 	local labelN = math.floor(roomN) + 1
@@ -596,11 +619,10 @@ local function trackPrompt(d)
 		hidePrompts[d] = true
 		local par = d.Parent
 		local m = (par and par:IsA("Model")) and par or d:FindFirstAncestorOfClass("Model")
-		local low = ((m and m.Name) or "") .. " " .. action
-		low = low:lower()
-		-- Only mark an actual hiding spot when the game exposes its dedicated HidePrompt.
-		-- Names such as Wardrobe/Closet alone also occur on decorative props.
-		if m and d.Name == "HidePrompt" then
+		local action = (d.ActionText or ""):lower()
+		local low = (((m and m.Name) or "") .. " " .. action):lower()
+		if m and (action:find("hide", 1, true) or low:find("wardrobe", 1, true)
+			or low:find("closet", 1, true) or low:find("hiding", 1, true)) then
 			addESP(m, "hide")
 		end
 	end
@@ -834,11 +856,76 @@ local antiKeys = {
 	antiHalt = "Halt", antiSnare = "Snare",
 }
 
+-- Rush/Ambush protection: temporarily move the local character above the map,
+-- then restore the original position after the threat model disappears.
+-- This is best-effort: server-authoritative movement may correct local CFrame changes.
+local safeTeleportBusy = false
+local handledThreats = setmetatable({}, { __mode = "k" })
+local function threatKey(inst)
+    if not inst then return nil end
+    if inst.Name == "RushMoving" or inst.Name == "RushNew" then return "antiRush" end
+    if inst.Name == "AmbushMoving" or inst.Name == "AmbushNew" then return "antiAmbush" end
+    return nil
+end
+
+local function startSafeTeleport(threat)
+    local flag = threatKey(threat)
+    if not flag or not cfg[flag] or safeTeleportBusy or handledThreats[threat] then return end
+    handledThreats[threat] = true
+    safeTeleportBusy = true
+    task.spawn(function()
+        local char = lp.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+        if not (hrp and humanoid and humanoid.Health > 0) then
+            safeTeleportBusy = false
+            return
+        end
+
+        local returnCFrame = hrp.CFrame
+        local oldAnchored = hrp.Anchored
+        local oldVelocity = hrp.AssemblyLinearVelocity
+        local oldAngularVelocity = hrp.AssemblyAngularVelocity
+        local moved = false
+        local ok = pcall(function()
+            -- Move high enough to avoid the entity without dropping below the map.
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.CFrame = returnCFrame + Vector3.new(0, 600, 0)
+            hrp.Anchored = true
+            moved = true
+        end)
+
+        if ok and moved then
+            local started = os.clock()
+            -- Wait for the actual entity instance to disappear. Timeout prevents getting stuck.
+            while threat and threat.Parent and os.clock() - started < 18 do
+                task.wait(0.12)
+            end
+            -- Give the entity a short grace period before returning.
+            task.wait(0.35)
+            if lp.Character == char and hrp.Parent then
+                pcall(function()
+                    hrp.Anchored = oldAnchored
+                    hrp.CFrame = returnCFrame
+                    hrp.AssemblyLinearVelocity = oldVelocity
+                    hrp.AssemblyAngularVelocity = oldAngularVelocity
+                end)
+            end
+        end
+        safeTeleportBusy = false
+    end)
+end
+
 local function antiInstant(inst)
 	if not inst or not inst.Parent then return end
 
 	for flag, key in pairs(antiKeys) do
 		if cfg[flag] and matches(inst.Name, ANTI_NAMES[key]) then
+            if key == "Rush" or key == "Ambush" then
+                startSafeTeleport(inst)
+                return
+            end
 			-- Screech has a game remote; keep this interaction and guard it.
 			if key == "Screech" then
 				pcall(function()
@@ -878,6 +965,14 @@ onRooms(function(rooms)
 	for _, inst in ipairs(rooms:GetDescendants()) do task.defer(antiInstant, inst) end
 end)
 
+-- Catch threats that already exist when the script or toggles initialize.
+for _, inst in ipairs(workspace:GetDescendants()) do
+    if threatKey(inst) then task.defer(startSafeTeleport, inst) end
+end
+workspace.DescendantAdded:Connect(function(inst)
+    if threatKey(inst) then task.defer(startSafeTeleport, inst) end
+end)
+
 local function deleteFigure()
 	local rooms = workspace:FindFirstChild("CurrentRooms")
 	local n = 0
@@ -897,7 +992,7 @@ task.spawn(function()
 		pcall(function()
 			local mods = getModules()
 			for flag, key in pairs(antiKeys) do
-				if cfg[flag] and mods then
+				if cfg[flag] and mods and key ~= "Rush" and key ~= "Ambush" then
 					for _, m in ipairs(mods:GetChildren()) do
 						if matches(m.Name, ANTI_NAMES[key]) then m:Destroy() end
 					end
