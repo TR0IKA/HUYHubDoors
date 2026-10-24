@@ -1,4 +1,4 @@
--- Huy Hub Doors v22 (item labels + filtered visual parts)
+-- Huy Hub Doors v23 (performance pass + tighter ESP filters)
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
@@ -197,7 +197,7 @@ local itemLabels = {}
 local function isVisualItemPart(part)
 	if not part or not part:IsA("BasePart") or part.Transparency >= 1 then return false end
 	local n = part.Name:lower()
-	local excluded = {"hitbox", "pickup", "prompt", "trigger", "proximity", "interaction", "collision", "sensor", "touchinterest", "handlehitbox"}
+	local excluded = {"hitbox", "pickup", "prompt", "trigger", "proximity", "interaction", "collision", "sensor", "touchinterest", "handlehitbox", "collider", "bounds", "moduleprompt", "assetcontrol", "pickedup", "weld", "touchinterest"}
 	for _, word in ipairs(excluded) do if n:find(word, 1, true) then return false end end
 	return true
 end
@@ -215,7 +215,12 @@ local function itemDisplayName(n)
 end
 local function addItemLabel(obj)
 	if not obj or not obj.Parent or obj:FindFirstChild("_HuyItemNameESP", true) then return end
-	local anchor = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
+	local anchor = obj:IsA("BasePart") and (isVisualItemPart(obj) and obj or nil) or nil
+	if not anchor then
+		for _, part in ipairs(obj:GetDescendants()) do
+			if isVisualItemPart(part) then anchor = part; break end
+		end
+	end
 	if not anchor then return end
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "_HuyItemNameESP"; gui.Adornee = anchor; gui.AlwaysOnTop = true
@@ -352,6 +357,9 @@ local function espDoor(d)
 	if not d or not d.Parent or d.Name ~= "Door" then return end
 	local room = roomFor(d)
 	if not room then return end
+	-- Real room doors are direct children of the room. Decorative models named "Door"
+	-- inside Assets/furniture must not receive numbers or ESP.
+	if d.Parent ~= room then return end
 	local doorModel = d
 	if not d:IsA("Model") and not d:IsA("BasePart") then return end
 	-- If the game's door is a Model, highlight only its visible solid parts; if it is a BasePart, use that part.
@@ -362,7 +370,9 @@ local function espDoor(d)
 		for _, part in ipairs(d:GetDescendants()) do
 			if part:IsA("BasePart") and part.Transparency < 1 then
 				local low = part.Name:lower()
-				if not low:find("hitbox", 1, true) and not low:find("prompt", 1, true) and not low:find("trigger", 1, true) then
+				if not low:find("hitbox", 1, true) and not low:find("prompt", 1, true)
+					and not low:find("trigger", 1, true) and not low:find("collision", 1, true)
+					and not low:find("sensor", 1, true) and not low:find("interaction", 1, true) then
 					table.insert(targets, part)
 				end
 			end
@@ -588,8 +598,9 @@ local function trackPrompt(d)
 		local m = (par and par:IsA("Model")) and par or d:FindFirstAncestorOfClass("Model")
 		local low = ((m and m.Name) or "") .. " " .. action
 		low = low:lower()
-		if m and (action:find("hide", 1, true) or low:find("wardrobe", 1, true)
-			or low:find("closet", 1, true) or low:find("hiding", 1, true)) then
+		-- Only mark an actual hiding spot when the game exposes its dedicated HidePrompt.
+		-- Names such as Wardrobe/Closet alone also occur on decorative props.
+		if m and d.Name == "HidePrompt" then
 			addESP(m, "hide")
 		end
 	end
@@ -607,19 +618,20 @@ onRooms(function(rooms)
 	refreshESP()
 end)
 
--- Re-scan all loaded rooms: some item models settle after DescendantAdded.
+-- Low-frequency fallback scan. New descendants are handled by DescendantAdded above;
+-- this scan only catches known loot/doors and avoids calling itemTarget for every part.
 task.spawn(function()
-	while task.wait(0.75) do
+	while task.wait(3.5) do
 		local rooms = workspace:FindFirstChild("CurrentRooms")
 		if rooms then
 			for _, d in ipairs(rooms:GetDescendants()) do
-				if d.Name == "Door" then espDoor(d) end
-				-- Check known loot models and their descendants repeatedly; many props are nested in room assets.
-				if ITEM_NAMES[d.Name] or isStardust(d.Name) then trackItemObject(d) else
-					local target = itemTarget(d)
-					if target and target ~= d then trackItemObject(target) end
+				if d.Name == "Door" then
+					espDoor(d)
+				elseif d.Name == "GoldPile" then
+					if cfg.espCoins then addCoinESP(d) end
+				elseif ITEM_NAMES[d.Name] or isStardust(d.Name) then
+					trackItemObject(d)
 				end
-				if d.Name == "GoldPile" and cfg.espCoins then addCoinESP(d) end
 			end
 		end
 	end
@@ -951,6 +963,8 @@ local function applyFullbright(enabled)
 	end
 end
 
+applyFullbright(cfg.fullbright)
+
 RS.Heartbeat:Connect(function()
 	local h = hum()
 	if h then
@@ -962,7 +976,6 @@ RS.Heartbeat:Connect(function()
 			h.JumpPower = cfg.jumpPower
 		end
 	end
-	applyFullbright(cfg.fullbright)
 end)
 
 UIS.JumpRequest:Connect(function()
@@ -1682,5 +1695,5 @@ workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 end)
 
 refreshESP()
-print("[Huy Hub Doors] v20 loaded")
+print("[Huy Hub Doors] v23 loaded")
 notify("Huy Hub Doors loaded", Color3.fromRGB(80, 220, 120))
