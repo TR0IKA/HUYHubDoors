@@ -1,4 +1,4 @@
--- Huy Hub Doors v24 (outline-only doors + strict hiding-spot ESP)
+-- Huy Hub Doors v28 (closer threat evade, dresser prompt coverage, dupe-door ESP)
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
@@ -261,19 +261,21 @@ local function addESP(obj, cat, genericItem)
 		end
 		for _, part in ipairs(parts) do
 			local visual = (cat ~= "items") or isVisualItemPart(part)
-			if visual and part.Parent and not part:FindFirstChild("_HuyItemBox") then
-				local boxOk, box = pcall(function()
-					local b = Instance.new("SelectionBox")
-					b.Name = "_HuyItemBox"
-					b.Adornee = part
-					b.LineThickness = 0.045
-					b.SurfaceTransparency = 0.82
-					b.Color3 = cat == "stardust" and COLORS[cfg.colStardust] or (cat == "coins" and COLORS[cfg.colCoins] or COLORS[cfg.colItems])
-					b.Visible = true
-					b.Parent = part
-					return b
+			if visual and part.Parent and not part:FindFirstChild("_HuyItemHighlight") then
+				local hlOk, hl = pcall(function()
+					local h = Instance.new("Highlight")
+					h.Name = "_HuyItemHighlight"
+					h.Adornee = part
+					h.FillTransparency = 0.35
+					h.OutlineTransparency = 0
+					h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					h.FillColor = cat == "stardust" and COLORS[cfg.colStardust] or COLORS[cfg.colItems]
+					h.OutlineColor = cat == "stardust" and COLORS[cfg.colStardust] or COLORS[cfg.colItems]
+					h.Enabled = (cat == "stardust" and cfg.espStardust) or (cat == "items" and cfg.espItems)
+					h.Parent = part
+					return h
 				end)
-				if boxOk then table.insert(itemBoxes, { box = box, cat = cat }) end
+				if hlOk then table.insert(reg, { h = hl, cat = cat, genericItem = genericItem == true }) end
 			end
 		end
 	end
@@ -296,7 +298,15 @@ local function refreshESP()
 			local allowed = true
 			if r.cat == "items" then
 				local target = r.h.Adornee
-				allowed = target and itemCategoryAllowed(target.Name) or false
+				local node = target
+				allowed = false
+				while node and node ~= workspace do
+					if isItemName(node.Name) then
+						allowed = itemCategoryAllowed(node.Name)
+						break
+					end
+					node = node.Parent
+				end
 			end
 			r.h.Enabled = m[1] and allowed
 			r.h.FillColor = COLORS[m[2]]
@@ -387,19 +397,21 @@ local function espDoor(d)
 		end
 	end
 	for _, part in ipairs(targets) do
-		if not part:FindFirstChild("_HuyDoorBox") then
-			local ok, box = pcall(function()
-				local b = Instance.new("SelectionBox")
-				b.Name = "_HuyDoorBox"
-				b.Adornee = part
-				b.LineThickness = 0.035
-				b.SurfaceTransparency = 1 -- no fill: outline only
-				b.Color3 = COLORS[cfg.colDoors]
-				b.Visible = cfg.espDoors
-				b.Parent = part
-				return b
+		if not part:FindFirstChild("_HuyDoorHighlight") then
+			local ok, hl = pcall(function()
+				local h = Instance.new("Highlight")
+				h.Name = "_HuyDoorHighlight"
+				h.Adornee = part
+				h.FillTransparency = 0.35
+				h.OutlineTransparency = 0
+				h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				h.FillColor = COLORS[cfg.colDoors]
+				h.OutlineColor = COLORS[cfg.colDoors]
+				h.Enabled = cfg.espDoors
+				h.Parent = part
+				return h
 			end)
-			if ok then table.insert(itemBoxes, {box = box, cat = "doors"}) end
+			if ok then table.insert(reg, { h = hl, cat = "doors", genericItem = false }) end
 		end
 	end
 	local roomN = tonumber(room.Name)
@@ -430,9 +442,45 @@ local function espDoor(d)
 		table.insert(doorLabels, gui)
 	end
 	local label = gui:FindFirstChildWhichIsA("TextLabel")
-	if label then label.Text = "Door " .. tostring(labelN) end
+	if label then label.Text = "Door" end
 	gui.Enabled = cfg.espDoors
 end
+
+-- Dupe's fake door is shown under the Entities ESP toggle, separate from numbered room doors.
+local fakeDoorSeen = setmetatable({}, { __mode = "k" })
+local function trackFakeDoor(inst)
+    if not inst or not inst.Parent or fakeDoorSeen[inst] then return end
+    local n = inst.Name:lower()
+    local isFake = (n:find("dupe", 1, true) and n:find("door", 1, true))
+        or n == "fakedoor" or n == "doorfake" or n == "fake_door"
+    local ancestor = inst.Parent
+    for _ = 1, 5 do
+        if not ancestor then break end
+        local an = ancestor.Name:lower()
+        if an:find("dupe", 1, true) and (n:find("door", 1, true) or n == "door") then
+            isFake = true
+            break
+        end
+        ancestor = ancestor.Parent
+    end
+    if not isFake or not (inst:IsA("Model") or inst:IsA("BasePart")) then return end
+    fakeDoorSeen[inst] = true
+    local hl = Instance.new("Highlight")
+    hl.Name = "_HuyDupeDoorESP"
+    hl.Adornee = inst
+    hl.FillTransparency = 0.35
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillColor = COLORS[cfg.colEntities]
+    hl.OutlineColor = COLORS[cfg.colEntities]
+    hl.Enabled = cfg.espEntities
+    hl.Parent = inst
+    table.insert(reg, { h = hl, cat = "ent", genericItem = false })
+end
+workspace.DescendantAdded:Connect(function(inst) task.defer(trackFakeDoor, inst) end)
+task.defer(function()
+    for _, inst in ipairs(workspace:GetDescendants()) do trackFakeDoor(inst) end
+end)
 
 local COIN_VALUES = { ["1"] = 5, ["2"] = 10, ["3"] = 25, ["4"] = 50, ["5"] = 75, ["6"] = 100 }
 local function coinValue(obj)
@@ -621,8 +669,9 @@ local function trackPrompt(d)
 		local m = (par and par:IsA("Model")) and par or d:FindFirstAncestorOfClass("Model")
 		local action = (d.ActionText or ""):lower()
 		local low = (((m and m.Name) or "") .. " " .. action):lower()
-		if m and (action:find("hide", 1, true) or low:find("wardrobe", 1, true)
-			or low:find("closet", 1, true) or low:find("hiding", 1, true)) then
+		-- Only mark real hiding spots whose active prompt explicitly offers Hide.
+		-- Decorative wardrobes/closets can have similar names but should not be marked.
+		if m and action:find("hide", 1, true) then
 			addESP(m, "hide")
 		end
 	end
@@ -666,7 +715,7 @@ local function fireFast(p)
 end
 
 -- Auto-open: strict filtering to avoid activating hide closets and prompt spam.
-local autoPromptSeen = {}
+local autoPromptSeen = setmetatable({}, { __mode = "k" })
 local function promptContext(prompt)
 	local names, node = {}, prompt.Parent
 	for _ = 1, 8 do
@@ -698,6 +747,8 @@ local function isContainerPrompt(prompt, context)
 	if n:find("closet", 1, true) or n:find("wardrobe", 1, true) or n:find("hide", 1, true) then return false end
 	return n:find("drawer", 1, true) ~= nil or n:find("chest", 1, true) ~= nil
 		or n:find("dresser", 1, true) ~= nil or n:find("search drawer", 1, true) ~= nil
+		or n:find("cabinet", 1, true) ~= nil or n:find("storage", 1, true) ~= nil
+		or n:find("search", 1, true) ~= nil
 end
 local function isDoorPrompt(prompt, context)
 	local action = string.lower(prompt.ActionText or "")
@@ -722,15 +773,18 @@ task.spawn(function()
 					 or (keyType == "skeleton" and cfg.autoSkeletonDoors))
 				if isContainer or isDoor then
 					local pos = promptPos(prompt)
-					if pos and (pos - r.Position).Magnitude <= 8 and not autoPromptSeen[prompt] then
-						autoPromptSeen[prompt] = true -- one attempt per prompt; no repeating loop
-						fireFast(prompt)
+					if pos and (pos - r.Position).Magnitude <= 11 then
+						local now = os.clock()
+						if not autoPromptSeen[prompt] or now - autoPromptSeen[prompt] >= 0.8 then
+							autoPromptSeen[prompt] = now
+							fireFast(prompt)
+						end
 					end
 				end
 			end
 		end
 		for prompt in pairs(autoPromptSeen) do
-			if not prompt.Parent then autoPromptSeen[prompt] = nil end
+			if not prompt.Parent or not prompt.Enabled then autoPromptSeen[prompt] = nil end
 		end
 	end
 end)
@@ -868,6 +922,17 @@ local function threatKey(inst)
     return nil
 end
 
+local function threatPosition(threat)
+    if not threat or not threat.Parent then return nil end
+    local ok, cf = pcall(function()
+        if threat:IsA("Model") then return threat:GetPivot() end
+        if threat:IsA("BasePart") then return threat.CFrame end
+        local part = threat:FindFirstChildWhichIsA("BasePart", true)
+        return part and part.CFrame or nil
+    end)
+    return ok and cf and cf.Position or nil
+end
+
 local function startSafeTeleport(threat)
     local flag = threatKey(threat)
     if not flag or not cfg[flag] or safeTeleportBusy or handledThreats[threat] then return end
@@ -882,32 +947,45 @@ local function startSafeTeleport(threat)
             return
         end
 
-        local returnCFrame = hrp.CFrame
-        local oldAnchored = hrp.Anchored
+        -- Do not teleport on spawn: wait until Rush/Ambush is genuinely close.
+        local approachDeadline = os.clock() + 20
+        local triggerDistance = 42
+        while threat and threat.Parent and os.clock() < approachDeadline do
+            if lp.Character ~= char or not hrp.Parent or humanoid.Health <= 0 then break end
+            local pos = threatPosition(threat)
+            if pos and (pos - hrp.Position).Magnitude <= triggerDistance then break end
+            task.wait(0.06)
+        end
+        if not (threat and threat.Parent and lp.Character == char and hrp.Parent and humanoid.Health > 0) then
+            safeTeleportBusy = false
+            return
+        end
+        local pos = threatPosition(threat)
+        if not pos or (pos - hrp.Position).Magnitude > triggerDistance + 5 then
+            safeTeleportBusy = false
+            return
+        end
+
+        local returnPivot = char:GetPivot()
         local oldVelocity = hrp.AssemblyLinearVelocity
         local oldAngularVelocity = hrp.AssemblyAngularVelocity
         local moved = false
         local ok = pcall(function()
-            -- Move high enough to avoid the entity without dropping below the map.
+            -- Pivot the whole character; anchoring the root can prevent replication in some clients.
+            char:PivotTo(returnPivot + Vector3.new(0, 1200, 0))
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
-            hrp.CFrame = returnCFrame + Vector3.new(0, 600, 0)
-            hrp.Anchored = true
             moved = true
         end)
-
         if ok and moved then
             local started = os.clock()
-            -- Wait for the actual entity instance to disappear. Timeout prevents getting stuck.
-            while threat and threat.Parent and os.clock() - started < 18 do
-                task.wait(0.12)
+            while threat and threat.Parent and os.clock() - started < 22 do
+                task.wait(0.08)
             end
-            -- Give the entity a short grace period before returning.
-            task.wait(0.35)
-            if lp.Character == char and hrp.Parent then
+            task.wait(0.45)
+            if lp.Character == char and hrp.Parent and humanoid.Health > 0 then
                 pcall(function()
-                    hrp.Anchored = oldAnchored
-                    hrp.CFrame = returnCFrame
+                    char:PivotTo(returnPivot)
                     hrp.AssemblyLinearVelocity = oldVelocity
                     hrp.AssemblyAngularVelocity = oldAngularVelocity
                 end)
